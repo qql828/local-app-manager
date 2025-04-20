@@ -131,3 +131,180 @@ class NLPProcessor:
             r'(亮度|屏幕)(.*?)(减小|降低|调低|减少|调小|小)(.*?)(到|至|成|为)(\d+)',
         ]
     }
+    
+    @staticmethod
+    def parse_with_deepseek(text: str) -> Tuple[Optional[str], Optional[Any]]:
+        """
+        使用DeepSeek大模型解析用户指令
+        
+        Args:
+            text: 用户输入的命令文本
+            
+        Returns:
+            Tuple[Optional[str], Optional[Any]]: 命令类型和参数
+        """
+        api_key = os.getenv('DEEPSEEK_API_KEY')
+        api_base = os.getenv('DEEPSEEK_API_BASE', 'https://api.deepseek.com/v1')
+        
+        if not api_key:
+            logger.warning("未配置DeepSeek API密钥，无法使用DeepSeek解析")
+            return None, None
+        
+        try:
+            # 构建提示词 - 减少硬编码指令，使用更灵活的描述
+            prompt = f"""请分析以下用户自然语言指令，提取操作类型和参数。
+
+操作类型包括：
+1. 应用操作类：
+   - open: 打开应用（例如"打开微信"、"启动浏览器"等）
+   - close: 关闭应用（例如"关闭微信"、"退出浏览器"等）
+   - uninstall: 卸载应用（例如"卸载QQ"、"删除游戏"等）
+   - list_running: 列出正在运行的应用（例如"查看正在运行的应用"等）
+   - list_installed: 列出已安装的应用（例如"显示已安装的软件"等）
+
+2. 设备控制类：
+   - 音量控制：get_volume（获取当前音量）、set_volume（设置音量）、increase_volume（增加音量）、decrease_volume（减小音量）、mute（静音）、unmute（解除静音）
+   - 亮度控制：get_brightness（获取当前亮度）、set_brightness（设置亮度）、increase_brightness（增加亮度）、decrease_brightness（减小亮度）
+
+3. 文件操作类：
+   - create_directory: 创建文件夹（例如"创建文件夹"、"新建目录"、"在下载目录下创建一个测试文件夹"等）
+   - list_subdirectories: 列出子文件夹（例如"列出目录下的文件夹"、"查看下载文件夹中的子目录"等）
+   - delete_file: 删除文件（例如"删除文件"、"移除下载目录中的测试.txt文件"等）
+   - delete_directory: 删除文件夹（例如"删除文件夹"、"移除下载目录中的测试目录"等）
+
+注意事项：
+- 应理解混合指令：比如"把音量调高到80%"同时包含increase_volume和set_volume语义，应判断为set_volume
+- 特别关注路径提取：对于文件操作，需要识别目录路径（如"下载目录"、"桌面"、"~/Documents"等）
+- 路径和名称分离：在创建文件夹时，需区分目录路径和文件夹名称
+
+对于目录路径解析的特殊说明：
+1. 中文目录名称的关键点：
+   - 当用户提到"xxx目录"时，必须考虑两种可能的路径：
+     a) "xxx目录"整体作为一个目录名
+     b) "xxx"作为真实目录名，"目录"仅是一个描述词
+   - 必须优先考虑第二种情况，因为通常"下载目录"实际指的是"下载"这个目录
+
+2. 常见的目录表达方式：
+   - "下载目录" → 优先理解为"下载"
+   - "桌面目录" → 优先理解为"桌面"
+   - "文档目录" → 优先理解为"文档"
+
+3. 扩展理解：
+   - "下载文件夹" → 与"下载目录"相同，优先理解为"下载"
+   - "在下载目录下" → 路径应该理解为"下载"
+   - "在下载里面" → 路径应该理解为"下载"
+
+用户指令: {text}
+
+返回格式（JSON）：
+{{
+  "command_type": "操作类型",
+  "parameter": "应用名称、数值或其他参数"
+}}
+
+对于文件操作，请使用以下结构：
+{{
+  "command_type": "create_directory或list_subdirectories或delete_file或delete_directory",
+  "parameter": {{
+    "path": "最可能的目录路径",
+    "path_alternatives": ["可能的替代路径1", "可能的替代路径2", "可能的替代路径3"],  // 提供至少3个替代路径选项
+    "name": "文件夹名称或文件名"  // 仅create_directory和delete_file、delete_directory需要
+  }}
+}}
+
+例如，当用户说"在下载目录下创建test文件夹"时，应返回：
+{{
+  "command_type": "create_directory",
+  "parameter": {{
+    "path": "下载",
+    "path_alternatives": ["下载目录", "Downloads", "~/Downloads"],
+    "name": "test"
+  }}
+}}
+
+例如，当用户说"删除下载目录中的test.txt文件"时，应返回：
+{{
+  "command_type": "delete_file",
+  "parameter": {{
+    "path": "下载",
+    "path_alternatives": ["下载目录", "Downloads", "~/Downloads"],
+    "name": "test.txt"
+  }}
+}}
+
+例如，当用户说"删除下载文件夹中的test目录"时，应返回：
+{{
+  "command_type": "delete_directory",
+  "parameter": {{
+    "path": "下载",
+    "path_alternatives": ["下载文件夹", "Downloads", "~/Downloads"],
+    "name": "test"
+  }}
+}}
+
+当解析路径时，若遇到"xxx目录"或"xxx文件夹"这样的表达，请始终将"xxx"作为第一优先选项放在path字段，而将完整表达"xxx目录"放入path_alternatives。
+
+若无法确定操作类型，command_type返回null。"""
+            
+            # 调用DeepSeek API
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 250
+            }
+            
+            response = requests.post(f"{api_base}/chat/completions", 
+                                    headers=headers, 
+                                    json=payload, 
+                                    timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result["choices"][0]["message"]["content"]
+                
+                # 尝试从响应中提取JSON
+                try:
+                    # 提取JSON内容（可能被包含在代码块中）
+                    json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+                    if json_match:
+                        content = json_match.group(1)
+                    elif content.strip().startswith('{') and content.strip().endswith('}'):
+                        # 直接是JSON格式
+                        content = content.strip()
+                    
+                    parsed = json.loads(content)
+                    cmd_type = parsed.get("command_type")
+                    parameter = parsed.get("parameter")
+                    
+                    # 检查并处理文件操作的特殊格式
+                    if cmd_type in ["create_directory", "list_subdirectories", "delete_file", "delete_directory"]:
+                        if isinstance(parameter, dict):
+                            # 参数已经是字典格式，直接使用
+                            logger.info(f"DeepSeek成功解析文件操作命令: {cmd_type}, 参数: {parameter}")
+                        elif isinstance(parameter, str) and cmd_type == "list_subdirectories":
+                            # 如果参数是字符串，转换为统一的字典格式
+                            parameter = {"path": parameter, "path_alternatives": []}
+                            logger.info(f"DeepSeek解析出路径字符串，已转换为字典: {parameter}")
+                    
+                    # 验证命令类型是否在已定义的命令列表中
+                    if cmd_type and hasattr(NLPProcessor, f"CMD_{cmd_type.upper()}"):
+                        logger.info(f"DeepSeek成功解析命令: {cmd_type}, 参数: {parameter}")
+                        return cmd_type, parameter
+                    elif cmd_type:
+                        logger.warning(f"DeepSeek解析出未知命令类型: {cmd_type}")
+                
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.error(f"解析DeepSeek响应失败: {str(e)}, 响应内容: {content}")
+            else:
+                logger.error(f"DeepSeek API调用失败: {response.status_code}, {response.text}")
+        
+        except Exception as e:
+            logger.error(f"调用DeepSeek时出错: {str(e)}")
+        
+        return None, None

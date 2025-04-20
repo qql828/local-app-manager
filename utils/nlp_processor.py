@@ -308,3 +308,39 @@ class NLPProcessor:
             logger.error(f"调用DeepSeek时出错: {str(e)}")
         
         return None, None
+    
+    @staticmethod
+    def parse_command(text: str) -> Tuple[Optional[str], Optional[Any]]:
+        """
+        解析用户输入的命令文本，识别命令类型和目标应用程序
+        
+        Args:
+            text: 用户输入的命令文本
+            
+        Returns:
+            Tuple[Optional[str], Optional[Any]]: 命令类型和参数，如果无法识别则返回(None, None)
+        """
+        if not text or not text.strip():
+            logger.warning("收到空命令，无法解析")
+            return None, None
+            
+        logger.info(f"开始解析命令: '{text}'")
+        
+        # 检查是否启用大模型解析
+        use_ai = os.getenv('USE_DEEPSEEK', 'True').lower() in ('true', '1', 't', 'yes', 'y')
+        
+        # 首选大模型解析
+        if use_ai:
+            logger.info("尝试使用大模型解析命令")
+            cmd_type, parameter = NLPProcessor.parse_with_deepseek(text)
+            
+            if cmd_type:
+                logger.info(f"大模型成功解析命令: {cmd_type}, 参数: {parameter}")
+                return cmd_type, parameter
+            else:
+                logger.warning("大模型解析失败，回退到本地解析")
+        else:
+            logger.info("大模型解析已禁用，直接使用本地解析")
+        
+        # 回退到本地解析
+        return NLPProcessor.parse_command_local(text)
